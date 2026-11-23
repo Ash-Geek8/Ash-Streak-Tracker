@@ -9,13 +9,35 @@ from .notes_rag import rebuild_notes_index,answer_from_notes
 api=Blueprint("api",__name__)
 CATS={"Food","Prayer","Skincare","Workout"}
 def error(msg,status=400): return jsonify({"error":msg}),status
-def rjson(r): return {"id":r.id,"name":r.name,"category":r.category,"description":r.description or "","target_per_week":r.target_per_week,"active":r.active}
+def rjson(r):
+    return {
+        "id": r.id,
+        "name": r.name,
+        "category": r.category,
+        "description": r.description or "",
+        "target_per_week": r.target_per_week,
+        "active": r.active,
+        "sort_order": r.sort_order
+    }
 def defaults(u):
     if Routine.query.filter_by(user_id=u.id).count()==0:
         for name,cat,desc in [("Breakfast / nutrition","Food","Follow planned meals"),("Lunch / nutrition","Food","Complete the main meal"),("Dinner / nutrition","Food","Complete evening meal"),("Daily prayers","Prayer","Track daily prayers"),("Morning skincare","Skincare","Morning routine"),("Night skincare","Skincare","Night routine"),("Workout / activity","Workout","Strength, cardio or recovery")]:
             db.session.add(Routine(user_id=u.id,name=name,category=cat,description=desc))
         db.session.commit()
-def ujson(u): return {"id":u.id,"email":u.email,"timezone":u.timezone,"today":local_today(u)}
+def ujson(u):
+    admin_email = (
+        current_app.config.get("ADMIN_EMAIL") or ""
+    ).strip().lower()
+
+    return {
+        "id": u.id,
+        "email": u.email,
+        "timezone": u.timezone,
+        "today": local_today(u),
+        "is_admin": bool(
+            admin_email and u.email.lower() == admin_email
+        )
+    }
 @api.post("/auth/register")
 def register():
     if not current_app.config["ALLOW_REGISTRATION"]: return error("Registration is disabled.",403)
@@ -51,13 +73,35 @@ def save_settings():
 @login_required
 def routines():
     defaults(current_user)
-    return jsonify([rjson(r) for r in Routine.query.filter_by(user_id=current_user.id).order_by(Routine.category,Routine.id).all()])
+    return jsonify([
+        rjson(r)
+        for r in Routine.query.filter_by(user_id=current_user.id)
+        .order_by(
+            Routine.category,
+            Routine.sort_order,
+            Routine.id
+        ).all()
+    ])
 @api.post("/routines")
 @login_required
 def add_routine():
     d=request.get_json(silent=True) or {}; name=(d.get("name") or "").strip(); cat=d.get("category")
     if not name or cat not in CATS: return error("Routine name and valid category are required.")
-    r=Routine(user_id=current_user.id,name=name[:100],category=cat,description=(d.get("description") or "")[:250],target_per_week=max(1,min(7,int(d.get("target_per_week",7)))))
+    last_order = db.session.query(
+        db.func.max(Routine.sort_order)
+    ).filter_by(
+        user_id=current_user.id,
+        category=cat
+    ).scalar()
+
+    r = Routine(
+        user_id=current_user.id,
+        name=name[:100],
+        category=cat,
+        description=(d.get("description") or "")[:250],
+        target_per_week=max(1, min(7, int(d.get("target_per_week", 7)))),
+        sort_order=(last_order if last_order is not None else -1) + 1
+    )
     db.session.add(r); db.session.commit(); return jsonify(rjson(r)),201
 @api.put("/routines/<int:rid>")
 @login_required

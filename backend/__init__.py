@@ -7,9 +7,12 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 from .extensions import db
+import os
 from .models import User
 from .routes import api
 from .config import Config
+from sqlalchemy import inspect, text
+from .extra_routes import extra_api
 
 login_manager = LoginManager()
 migrate = Migrate()
@@ -22,7 +25,11 @@ def load_user(user_id):
 def create_app(test_config=None):
     load_dotenv()
     app = Flask(__name__, static_folder="../frontend/build", static_url_path="/")
+    app.register_blueprint(extra_api, url_prefix="/api")
     app.config.from_object(Config)
+    app.config["ADMIN_EMAIL"] = os.getenv(
+        "ADMIN_EMAIL", ""
+    ).strip().lower()
     if test_config: app.config.update(test_config)
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
     db.init_app(app); login_manager.init_app(app); migrate.init_app(app, db); limiter.init_app(app)
@@ -38,5 +45,19 @@ def create_app(test_config=None):
     def server_error(error):
         db.session.rollback()
         return jsonify({"error":"Internal server error"}),500
-    with app.app_context(): db.create_all()
+    with app.app_context():
+        db.create_all()
+
+        # Add sort_order to existing Routine tables without deleting data.
+        columns = {
+            column["name"]
+            for column in inspect(db.engine).get_columns("routine")
+        }
+
+        if "sort_order" not in columns:
+            db.session.execute(text(
+                "ALTER TABLE routine "
+                "ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+            ))
+            db.session.commit()
     return app
